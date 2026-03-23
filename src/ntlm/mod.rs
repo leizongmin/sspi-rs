@@ -431,6 +431,13 @@ impl Ntlm {
                     .context_requirements
                     .contains(ClientRequestFlags::CONFIDENTIALITY);
 
+                // ISC_REQ_USE_DCE_STYLE implies full signing and sealing, matching Windows SSPI
+                // behavior where DCE-style NTLM always negotiates SEAL+KEY_EXCH regardless of
+                // whether INTEGRITY/CONFIDENTIALITY were explicitly requested.
+                if builder.context_requirements.contains(ClientRequestFlags::USE_DCE_STYLE) {
+                    self.sealing = true;
+                }
+
                 if self.sealing {
                     self.signing = true; // sealing implies signing
                 }
@@ -534,9 +541,12 @@ impl Sspi for Ntlm {
             self.complete_auth_token(&mut [])?;
         }
 
-        // check if exists
+        // Check if exists.
         SecurityBufferRef::find_buffer_mut(message, BufferType::Token)?;
-        // Find `Data` buffers (including `Data` buffers with the `READONLY_WITH_CHECKSUM` flag).
+
+        // Find `Data` buffers for MAC computation. Include all data buffers regardless of flags:
+        // NTLM includes SECBUFFER_READONLY data in the MAC (Windows behavior), it just doesn't
+        // encrypt those buffers in-place.
         let data_to_sign =
             SecurityBufferRef::buffers_of_type(message, BufferType::Data).fold(Vec::new(), |mut acc, buffer| {
                 acc.extend_from_slice(buffer.data());
@@ -547,17 +557,19 @@ impl Sspi for Ntlm {
 
         let digest = compute_digest(self.send_signing_key.as_ref(), sequence_number, &data_to_sign)?;
 
-        // Find `Data` buffers without the `READONLY_WITH_CHECKSUM`/`READONLY` flag.
-        let data =
+        // Encrypt writable Data buffers in-place. If all data buffers are SECBUFFER_READONLY,
+        // skip encryption (sign-only mode). The RC4 state is not advanced for skipped buffers,
+        // matching the server's DecryptMessage behavior which also skips READONLY buffers.
+        if let Some(data) =
             SecurityBufferRef::buffers_of_type_and_flags_mut(message, BufferType::Data, SecurityBufferFlags::NONE)
                 .next()
-                .ok_or_else(|| Error::new(ErrorKind::InvalidToken, "no buffer was provided with type Data"))?;
-
-        let encrypted_data = self.send_sealing_key.as_mut().unwrap().process(data.data());
-        if encrypted_data.len() < data.buf_len() {
-            return Err(Error::new(ErrorKind::BufferTooSmall, "the Data buffer is too small"));
+        {
+            let encrypted_data = self.send_sealing_key.as_mut().unwrap().process(data.data());
+            if encrypted_data.len() < data.buf_len() {
+                return Err(Error::new(ErrorKind::BufferTooSmall, "the Data buffer is too small"));
+            }
+            data.write_data(&encrypted_data)?;
         }
-        data.write_data(&encrypted_data)?;
 
         self.compute_checksum(message, sequence_number, &digest)?;
 
@@ -591,14 +603,19 @@ impl Sspi for Ntlm {
 
         let decrypted = self.recv_sealing_key.as_mut().unwrap().process(encrypted_message);
 
-        save_decrypted_data(&decrypted, message)?;
+        if !decrypted.is_empty() {
+            save_decrypted_data(&decrypted, message)?;
+        }
 
-        // Find `Data` buffers (including `Data` buffers with the `READONLY_WITH_CHECKSUM` flag).
         let data_to_sign =
             SecurityBufferRef::buffers_of_type(message, BufferType::Data).fold(Vec::new(), |mut acc, buffer| {
+                // Find `Data` buffers for MAC computation. Include all data buffers regardless of flags:
+                // NTLM includes SECBUFFER_READONLY data in the MAC (Windows behavior), it just doesn't
+                // encrypt those buffers in-place.
                 if buffer
                     .buffer_flags()
                     .contains(SecurityBufferFlags::SECBUFFER_READONLY_WITH_CHECKSUM)
+                    || buffer.buffer_flags().contains(SecurityBufferFlags::SECBUFFER_READONLY)
                 {
                     acc.extend_from_slice(buffer.data());
                 } else {
@@ -606,8 +623,10 @@ impl Sspi for Ntlm {
                     // So, we replace encrypted data with decrypted one.
                     acc.extend_from_slice(&decrypted);
                 }
+
                 acc
             });
+
         let digest = compute_digest(self.recv_signing_key.as_ref(), sequence_number, &data_to_sign)?;
         self.check_signature(sequence_number, &digest, signature)?;
 

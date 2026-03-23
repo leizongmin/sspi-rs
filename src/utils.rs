@@ -327,10 +327,12 @@ pub(crate) fn extract_encrypted_data(buffers: &[SecurityBufferRef<'_>]) -> Resul
             use crate::SecurityBufferFlags;
 
             // Find `Data` buffers but skip `Data` buffers with the `READONLY_WITH_CHECKSUM`/`READONLY` flag.
+            // The `Data` buffer without any flags is not mandatory. The user can specify only read-only buffers
+            // for checksum computation (currently, supported only in NTLM).
             SecurityBufferRef::buffers_of_type_and_flags(buffers, BufferType::Data, SecurityBufferFlags::NONE)
                 .next()
-                .ok_or_else(|| Error::new(ErrorKind::InvalidToken, "no buffer was provided with type Data"))?
-                .data()
+                .map(|buffer| buffer.data())
+                .unwrap_or_default()
         },
     );
 
