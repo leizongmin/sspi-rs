@@ -14,10 +14,9 @@ use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, CertificateType, ObjectClass};
 use picky_asn1::wrapper::Utf8StringAsn1;
 use picky_asn1_x509::{Certificate, ExtendedKeyUsage, ExtensionView, GeneralName, oids};
-use sspi::{Error, ErrorKind, Result, utf16_bytes_to_utf8_string};
+use sspi::{Error, ErrorKind, Result, Utf16String, Utf16StringExt};
 use winscard::MICROSOFT_DEFAULT_CSP;
 
-use crate::utils::str_encode_utf16;
 use crate::winscard::piv::try_get_piv_container_name;
 
 /// Environment variable that specifies a custom CSP name.
@@ -30,24 +29,23 @@ const CSP_NAME_VAR: &str = "SSPI_CSP_NAME";
 /// Contains smart card certificate, reader name, container name, and other fields.
 #[derive(Debug)]
 pub struct SystemSmartCardInfo {
-    /// UTF-16 encoded reader name.
+    /// UTF-16 LE encoded reader name.
     ///
     /// Reader name is the selected slot description.
     pub reader_name: Vec<u8>,
-    /// UTF-16 encoded smart card CSP name.
+    /// UTF-16 LE encoded smart card CSP name.
     pub csp_name: Vec<u8>,
     /// Certificate.
     pub certificate: Vec<u8>,
-    /// UTF-16 encoded smart card key container name.
+    /// UTF-16 LE encoded smart card key container name.
     pub container_name: Option<Vec<u8>>,
-    /// UTF-16 encoded smart card name.
+    /// UTF-16 LE encoded smart card name.
     pub card_name: Option<Vec<u8>>,
 }
 
 /// Collects system-provided smart card information.
 ///
-/// The username must be in FQDN (user@domain) format and UTF-16 encoded.
-/// The PIN code must be UTF-16 encoded.
+/// The username must be in FQDN (user@domain) format and UTF-16 LE encoded.
 #[instrument(level = "trace", ret)]
 pub fn smart_card_info(username: &[u8], pkcs11_module: &Path) -> Result<SystemSmartCardInfo> {
     use cryptoki::context::CInitializeFlags;
@@ -55,7 +53,7 @@ pub fn smart_card_info(username: &[u8], pkcs11_module: &Path) -> Result<SystemSm
     let pkcs11 = Pkcs11::new(pkcs11_module)?;
     pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))?;
 
-    let username = utf16_bytes_to_utf8_string(username)?;
+    let username = Utf16String::from_bytes_le(username)?.to_string();
 
     for slot in pkcs11.get_slots_with_token()? {
         let session = pkcs11.open_ro_session(slot)?;
@@ -101,7 +99,7 @@ pub fn smart_card_info(username: &[u8], pkcs11_module: &Path) -> Result<SystemSm
 
             container_name = try_get_piv_container_name(reader_name, &label)
                 .as_deref()
-                .map(str_encode_utf16)
+                .map(|name| Utf16String::from_str(name).to_bytes_le())
                 .ok();
 
             if container_name.is_some() {
@@ -109,17 +107,17 @@ pub fn smart_card_info(username: &[u8], pkcs11_module: &Path) -> Result<SystemSm
             }
         }
 
-        let reader_name = str_encode_utf16(reader_name);
+        let reader_name = Utf16String::from_str(reader_name).to_bytes_le();
 
         let csp_name = if let Ok(csp) = env::var(CSP_NAME_VAR) {
             Cow::Owned(csp)
         } else {
             Cow::Borrowed(MICROSOFT_DEFAULT_CSP)
         };
-        let csp_name = str_encode_utf16(csp_name.as_ref());
+        let csp_name = Utf16String::from_str(&csp_name).to_bytes_le();
 
         let token_info = pkcs11.get_token_info(slot)?;
-        let card_name = Some(str_encode_utf16(token_info.label()));
+        let card_name = Some(Utf16String::from_str(token_info.label()).to_bytes_le());
 
         return Ok(SystemSmartCardInfo {
             reader_name,

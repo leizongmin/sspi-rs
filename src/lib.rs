@@ -98,9 +98,11 @@ use picky_krb::messages::KrbError;
 #[cfg(feature = "__rustls-used")]
 pub use rustls::install_default_crypto_provider_if_necessary;
 pub use security_buffer::SecurityBufferRef;
-pub use utf16string::{NonEmpty, Utf16Str, Utf16String, Utf16StringExt};
+pub use utf16string::{
+    NonEmpty, U16CStr, U16CString, U16CStringExt, Utf16Str, Utf16String, Utf16StringExt, ZeroizedUtf16String,
+};
 use utils::map_keb_error_code_to_sspi_error;
-pub use utils::{modpow, str_to_w_buff, string_to_utf16, utf16_bytes_to_utf8_string};
+pub use utils::modpow;
 
 pub use self::auth_identity::{
     AuthIdentity, AuthIdentityBuffers, Credentials, CredentialsBuffers, UserNameFormat, Username,
@@ -2442,6 +2444,12 @@ impl From<cryptoki::error::Error> for Error {
 
 impl From<widestring::error::Utf16Error> for Error {
     fn from(value: widestring::error::Utf16Error) -> Self {
-        Self::new(ErrorKind::InternalError, format!("UTF-16 error: {value:?}"))
+        Self::new(ErrorKind::InvalidParameter, format!("UTF-16 error: {value}"))
+    }
+}
+
+impl From<widestring::error::ContainsNul<u16>> for Error {
+    fn from(value: widestring::error::ContainsNul<u16>) -> Self {
+        Self::new(ErrorKind::InvalidParameter, format!("UTF-16 error: {value}"))
     }
 }

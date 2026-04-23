@@ -17,20 +17,16 @@ pub(crate) fn into_raw_ptr<T>(value: T) -> *mut T {
 ///
 /// * the `raw_buffer` pointer can be null.
 /// * if `raw_buffer` is not null, then it must be valid for reads for `len` many bytes, and it must be properly aligned.
-/// * The total size `len` of the slice must be no larger than `isize::MAX`, and adding that size to `data`
+/// * The total size `len` of the slice must be no larger than `isize::MAX`, and adding that size to `raw_buffer`
 ///   must not "wrap around" the address space.
 pub(crate) unsafe fn credentials_str_into_bytes(raw_buffer: *const c_char, len: usize) -> Vec<u8> {
     if !raw_buffer.is_null() {
         // SAFETY:
         // - `raw_buffer` is guaranteed to be non-null due to the prior check.
         // - `raw_buffer` is valid for reads for `len` many bytes.
+        // - `len` does not exceed `isize::MAX`.
         unsafe { from_raw_parts(raw_buffer as *const u8, len) }.to_vec()
     } else {
         Vec::new()
     }
-}
-
-#[cfg(any(feature = "scard", feature = "tsssp"))]
-pub(crate) fn str_encode_utf16(data: &str) -> Vec<u8> {
-    data.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
 }

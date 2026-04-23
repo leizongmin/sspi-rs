@@ -16,9 +16,8 @@ use sspi::ntlm::NtlmConfig;
 use sspi::{
     CertContext, ClientRequestFlags, ConnectionInfo, Credentials, CredentialsBuffers, DataRepresentation, Error,
     ErrorKind, Kerberos, Negotiate, NegotiateConfig, Ntlm, PackageInfo, Result, Secret, Sspi, SspiImpl, StreamSizes,
-    Utf16StringExt, kerberos, negotiate, ntlm, pku2u,
+    U16CString, kerberos, negotiate, ntlm, pku2u,
 };
-use widestring::Utf16String;
 #[cfg(target_os = "windows")]
 use windows::Win32::Security::Cryptography::{
     CERT_CONTEXT, CERT_QUERY_ENCODING_TYPE, CERT_STORE_ADD_REPLACE_EXISTING, CERT_STORE_CREATE_NEW_FLAG,
@@ -441,9 +440,10 @@ pub type AcquireCredentialsHandleFnA = unsafe extern "system" fn(
 ///
 /// # Safety
 ///
-/// `psz_package` must be a non-null pointer to a valid, null-terminated C string representing the security package name.
-/// `p_auth_data` must be a non-null pointer to a valid credentials structure corresponding to the security package in use.
-/// `ph_credentials` must be a non-null pointer to a valid `SecHandle` structure.
+/// - `psz_package` must be a non-null pointer to a valid, null-terminated C string representing the security package name.
+///    Must be properly aligned for `u16`.
+/// - `p_auth_data` must be a non-null pointer to a valid credentials structure corresponding to the security package in use.
+/// - `ph_credentials` must be a non-null pointer to a valid `SecHandle` structure.
 #[instrument(skip_all)]
 #[cfg_attr(windows, rename_symbol(to = "Rust_AcquireCredentialsHandleW"))]
 #[unsafe(no_mangle)]
@@ -467,9 +467,10 @@ pub unsafe extern "system" fn AcquireCredentialsHandleW(
             // SAFETY:
             // - `psz_package` is guaranteed to be non-null due to the prior check.
             // - The memory region `psz_package` contains a valid null-terminator at the end of string.
-            // - The memory region `psz_package` points to is valid for reads of bytes up to and including null-terminator.
-            unsafe { Utf16String::from_pcwstr(psz_package) }.map_err(Error::from)
-        ).to_string();
+            // - The memory region `psz_package` points to is valid for reads of `u16` code units up to and including null-terminator.
+            // - `psz_package` is properly aligned for `u16`, per the safety preconditions.
+            unsafe { U16CString::from_ptr_str(psz_package) }.to_string().map_err(Error::from)
+        );
         try_execute!(verify_security_package(&security_package_name));
 
         debug!(?security_package_name);
@@ -701,6 +702,7 @@ pub type InitializeSecurityContextFnA = unsafe extern "system" fn(
 /// - `ph_context` must be a valid pointer to a `SecHandle` structure.
 ///   If `dw_lower` and `dw_upper` fields are non-zero, then they must point to a memory that was allocated by an SSPI function.
 /// - `p_target_name` must be a non-null pointer to a valid, null-terminated C string representing the target name.
+///    Must be properly aligned for `u16`.
 /// - `p_input` must be a non-null, properly-aligned pointer to a valid `SecBufferDesc` structure that is [convertible to a reference](https://doc.rust-lang.org/std/ptr/index.html#pointer-to-reference-conversion)
 /// - `ph_new_context` must be a non-null, properly-aligned pointer to a valid `SecHandle` structure that is [convertible to a reference](https://doc.rust-lang.org/std/ptr/index.html#pointer-to-reference-conversion)
 /// - `p_output` must be a non-null, properly-aligned pointer to a valid `SecBufferDesc` structure.
@@ -744,8 +746,9 @@ pub unsafe extern "system" fn InitializeSecurityContextW(
                 // - `p_target_name` is guaranteed to be non-null due to the prior check.
                 // - The memory region `p_target_name` contains a valid null-terminator at the end of string.
                 // - The memory region `p_target_name` points to is valid for reads of bytes up to and including null-terminator.
-                unsafe { Utf16String::from_pcwstr(p_target_name) }.map_err(Error::from)
-            ).to_string()
+                // - `p_target_name` is properly aligned for `u16`, per the safety preconditions.
+                unsafe { U16CString::from_ptr_str(p_target_name) }.to_string().map_err(Error::from)
+            )
         };
         debug!(?service_principal, "Target name (SPN)");
 
@@ -1355,7 +1358,7 @@ pub type SetCredentialsAttributesFnA = unsafe extern "system" fn(PCtxtHandle, u3
 /// - `ph_context` must be a non-null, valid pointer to a `SecHandle` structure.
 ///   If `dw_lower` and `dw_upper` fields are non-zero, then they must point to a memory that was allocated by an SSPI function.
 /// - If `ul_attribute` is [`SECPKG_CRED_ATTR_NAMES`] or [`SECPKG_CRED_ATTR_KDC_URL`],
-///  `p_buffer` must be a non-null pointer to a valid null-terminated C String.
+///  `p_buffer` must be a non-null pointer to a valid null-terminated C String and be properly aligned for `u16`.
 /// - Else, `p_buffer` must be a non-null pointer to a valid [`SecPkgCredentialsKdcProxySettingsW`] structure.
 #[instrument(skip_all)]
 #[cfg_attr(windows, rename_symbol(to = "Rust_SetCredentialsAttributesW"))]
@@ -1389,9 +1392,10 @@ pub unsafe extern "system" fn SetCredentialsAttributesW(
                 // SAFETY:
                 // - `p_buffer` is guaranteed to be non-null due to the prior check.
                 // - The memory region `p_buffer` contains a valid null-terminator at the end of string.
-                // - The memory region `p_buffer` points to is valid for reads of bytes up to and including null-terminator.
-                unsafe { Utf16String::from_pcwstr(p_buffer.cast()) }.map_err(Error::from)
-            ).to_string();
+                // - The memory region `p_buffer` points to is valid for reads of `u16` code units up to and including null-terminator.
+                // - `p_buffer` is properly aligned for `u16`, per the safety preconditions.
+                unsafe { U16CString::from_ptr_str(p_buffer.cast()) }.to_string().map_err(Error::from)
+            );
 
             credentials_handle.attributes.workstation = Some(workstation);
 
@@ -1420,11 +1424,12 @@ pub unsafe extern "system" fn SetCredentialsAttributesW(
 
             let kdc_url = try_execute!(
                 // SAFETY:
-                // - `kdc_url` is non-null due to the prior check.
+                // - `kdc_url` is guaranteed to be non-null due to the prior null check.
                 // - The memory region `kdc_url` contains a valid null-terminator at the end of string.
-                // - The memory region `kdc_url` points to is valid for reads of bytes up to and including null-terminator.
-                unsafe { Utf16String::from_pcwstr(kdc_url) }.map_err(Error::from)
-            ).to_string();
+                // - The memory region `kdc_url` points to is valid for reads of `u16` code units up to and including the null-terminator.
+                // - `kdc_url` is properly aligned for `u16`, per the safety preconditions.
+                unsafe { U16CString::from_ptr_str(kdc_url) }.to_string().map_err(Error::from)
+            );
             credentials_handle.attributes.kdc_url = Some(kdc_url);
 
             0
@@ -1585,10 +1590,15 @@ pub type ChangeAccountPasswordFnA = unsafe extern "system" fn(
 /// # Safety
 ///
 /// - `psz_package_name` must be a non-null pointer to a valid, null-terminated C string representing the package name.
+///   Must be properly aligned for `u16`.
 /// - `psz_domain_name` must be a non-null pointer to a valid, null-terminated C string representing the domain name.
+///   Must be properly aligned for `u16`.
 /// - `psz_account_name` must be a non-null pointer to a valid, null-terminated C string representing the account name.
+///   Must be properly aligned for `u16`.
 /// - `psz_old_password` must be a non-null pointer to a valid, null-terminated C string representing the old password.
+///   Must be properly aligned for `u16`.
 /// - `psz_new_password` must be a non-null pointer to a valid, null-terminated C string representing the new password.
+///   Must be properly aligned for `u16`.
 /// - `p_output` must be a non-null, properly-aligned pointer to a valid `SecBufferDesc` structure.
 ///   It must contain enough buffers, and each buffer must have enough space to hold the output tokens.
 #[instrument(skip_all)]
@@ -1616,38 +1626,43 @@ pub unsafe extern "system" fn ChangeAccountPasswordW(
             // SAFETY:
             // - `psz_package_name` is guaranteed to be non-null due to the prior check.
             // - The memory region `psz_package_name` contains a valid null-terminator at the end of string.
-            // - The memory region `psz_package_name` points to is valid for reads of bytes up to and including null-terminator.
-            unsafe { Utf16String::from_pcwstr(psz_package_name) }.map_err(Error::from)
-        ).to_string();
+            // - The memory region `psz_package_name` points to is valid for reads of `u16` code units up to and including null-terminator.
+            // - `psz_package_name` is properly aligned for `u16`, per the safety preconditions.
+            unsafe { U16CString::from_ptr_str(psz_package_name) }.to_string().map_err(Error::from)
+        );
 
         let mut domain = try_execute!(
             // SAFETY:
             // - `psz_domain_name` is guaranteed to be non-null due to the prior check.
             // - The memory region `psz_domain_name` contains a valid null-terminator at the end of string.
-            // - The memory region `psz_domain_name` points to is valid for reads of bytes up to and including null-terminator.
-            unsafe { Utf16String::from_pcwstr(psz_domain_name) }.map_err(Error::from)
-        ).to_string();
+            // - The memory region `psz_domain_name` points to is valid for reads of `u16` code units up to and including null-terminator.
+            // - `psz_domain_name` is properly aligned for `u16`, per the safety preconditions.
+            unsafe { U16CString::from_ptr_str(psz_domain_name) }.to_string().map_err(Error::from)
+        );
         let mut username = try_execute!(
             // SAFETY:
             // - `psz_account_name` is guaranteed to be non-null due to the prior check.
             // - The memory region `psz_account_name` contains a valid null-terminator at the end of string.
-            // - The memory region `psz_account_name` points to is valid for reads of bytes up to and including null-terminator.
-            unsafe { Utf16String::from_pcwstr(psz_account_name) }.map_err(Error::from)
-        ).to_string();
+            // - The memory region `psz_account_name` points to is valid for reads of `u16` code units up to and including null-terminator.
+            // - `psz_account_name` is properly aligned for `u16`, per the safety preconditions.
+            unsafe { U16CString::from_ptr_str(psz_account_name) }.to_string().map_err(Error::from)
+        );
         let mut password = Secret::new(try_execute!(
             // SAFETY:
             // - `psz_old_password` is guaranteed to be non-null due to the prior check.
             // - The memory region `psz_old_password` contains a valid null-terminator at the end of string.
-            // - The memory region `psz_old_password` points to is valid for reads of bytes up to and including null-terminator.
-            unsafe { Utf16String::from_pcwstr(psz_old_password) }.map_err(Error::from)
-        ).to_string());
+            // - The memory region `psz_old_password` points to is valid for reads of `u16` code units up to and including null-terminator.
+            // - `psz_old_password` is properly aligned for `u16`, per the safety preconditions.
+            unsafe { U16CString::from_ptr_str(psz_old_password) }.to_string().map_err(Error::from)
+        ));
         let mut new_password = Secret::new(try_execute!(
             // SAFETY:
             // - `psz_new_password` is guaranteed to be non-null due to the prior check.
             // - The memory region `psz_new_password` contains a valid null-terminator at the end of string.
-            // - The memory region `psz_new_password` points to is valid for reads of bytes up to and including null-terminator.
-            unsafe { Utf16String::from_pcwstr(psz_new_password) }.map_err(Error::from)
-        ).to_string());
+            // - The memory region `psz_new_password` points to is valid for reads of `u16` code units up to and including null-terminator.
+            // - `psz_new_password` is properly aligned for `u16`, per the safety preconditions.
+            unsafe { U16CString::from_ptr_str(psz_new_password) }.to_string().map_err(Error::from)
+        ));
 
         // SAFETY:
         // * `security_package_name' is a `String`.
@@ -1748,8 +1763,7 @@ mod tests {
     use std::ptr::{self, null, null_mut};
 
     use libc::{c_ulonglong, c_void};
-    use sspi::Utf16StringExt;
-    use widestring::Utf16String;
+    use sspi::U16CString;
 
     use crate::sspi::common::{DeleteSecurityContext, FreeContextBuffer, FreeCredentialsHandle};
     use crate::sspi::sec_buffer::{SecBuffer, SecBufferDesc};
@@ -1783,8 +1797,18 @@ mod tests {
         // We left all `println`s on purpose:
         // to simulate any memory access to the allocated memory.
         println!("{pkg_info:?}");
-        println!("{:?}", unsafe { Utf16String::from_pcwstr(pkg_info.name) });
-        println!("{:?}", unsafe { Utf16String::from_pcwstr(pkg_info.comment) });
+        println!(
+            "{:?}",
+            unsafe { U16CString::from_ptr_str(pkg_info.name) }
+                .to_string()
+                .expect("package name returned by QuerySecurityPackageInfoW is valid UTF-16")
+        );
+        println!(
+            "{:?}",
+            unsafe { U16CString::from_ptr_str(pkg_info.comment) }
+                .to_string()
+                .expect("package comment returned by QuerySecurityPackageInfoW is valid UTF-16")
+        );
 
         let cb_max_token = pkg_info.cb_max_token;
 
@@ -1803,8 +1827,18 @@ mod tests {
             let pkg_info = unsafe { pkg_info.as_ref() }.expect("pkg_info is not null");
 
             println!("{pkg_info:?}");
-            println!("{:?}", unsafe { Utf16String::from_pcwstr(pkg_info.name) });
-            println!("{:?}", unsafe { Utf16String::from_pcwstr(pkg_info.comment) });
+            println!(
+                "{:?}",
+                unsafe { U16CString::from_ptr_str(pkg_info.name) }
+                    .to_string()
+                    .expect("package name returned by EnumerateSecurityPackagesW is valid UTF-16")
+            );
+            println!(
+                "{:?}",
+                unsafe { U16CString::from_ptr_str(pkg_info.comment) }
+                    .to_string()
+                    .expect("package comment returned by EnumerateSecurityPackagesW is valid UTF-16")
+            );
         }
 
         let status = unsafe { FreeContextBuffer(packages.cast()) };

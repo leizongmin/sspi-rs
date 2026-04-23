@@ -7,10 +7,9 @@ use ffi_types::winscard::{
 };
 use ffi_types::{LpByte, LpCByte, LpCStr, LpCVoid, LpCWStr, LpDword, LpStr, LpVoid, LpWStr};
 use num_traits::FromPrimitive;
-use sspi::Utf16StringExt;
+use sspi::U16CString;
 #[cfg(target_os = "windows")]
 use symbol_rename_macro::rename_symbol;
-use widestring::Utf16String;
 use winscard::winscard::{AttributeId, Protocol, ScardConnectData, ShareMode};
 use winscard::{Error, ErrorKind, WinScardResult};
 
@@ -138,7 +137,7 @@ pub unsafe extern "system" fn SCardConnectA(
 /// # Safety
 ///
 /// - `context` must be a valid raw scard context handle.
-/// - `sz_reader` must be a non-null pointer to a valid, null-terminated C string.
+/// - `sz_reader` must be a properly-aligned, non-null pointer to a valid, null-terminated wide character string (UTF-16).
 /// - `ph_card` must be a properly-aligned pointer, valid for writes.
 /// - `pdw_active_protocol` must be a properly-aligned pointer, valid for writes.
 #[cfg_attr(windows, rename_symbol(to = "Rust_SCardConnectW"))]
@@ -160,12 +159,14 @@ pub unsafe extern "system" fn SCardConnectW(
     let reader_name = try_execute!(
         // SAFETY:
         // - `sz_reader` is guaranteed to be non-null due to the prior check.
+        // - `sz_reader` is guaranteed to be properly aligned for `u16` access (upheld by the caller per the function's safety contract).
         // - The memory region `sz_reader` contains a valid null-terminator at the end of string.
-        // - The memory region `sz_reader` points to is valid for reads of bytes up to and including null-terminator.
-        unsafe { Utf16String::from_pcwstr(sz_reader) }
-            .map_err(|err| Error::new(ErrorKind::InvalidParameter, err.to_string()))
-    )
-    .to_string();
+        // - The memory region `sz_reader` is properly aligned for `u16`, per safety preconditions.
+        // - The memory region `sz_reader` points to is valid for reads of u16 code units up to and including the null-terminating u16.
+        unsafe { U16CString::from_ptr_str(sz_reader) }
+            .to_string()
+            .map_err(Error::from)
+    );
 
     try_execute!(
         // SAFETY:
