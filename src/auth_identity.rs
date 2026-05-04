@@ -233,9 +233,25 @@ impl From<AuthIdentity> for AuthIdentityBuffers {
     fn from(credentials: AuthIdentity) -> Self {
         let password: &str = credentials.password.as_ref().as_ref();
 
+        let (user, domain) = match credentials.username.format() {
+            // For UPN format (user@domain), pass the full UPN as the username
+            // with empty domain. This is required for Microsoft accounts where
+            // the domain part is the email domain, not a Windows domain.
+            // Windows native SSPI preserves the full UPN, and the RDP server
+            // uses this identity for auto-logon.
+            UserNameFormat::UserPrincipalName => {
+                (credentials.username.inner().into(), String::new().into())
+            }
+            // For down-level format (DOMAIN\user), split normally.
+            UserNameFormat::DownLevelLogonName => (
+                credentials.username.account_name().into(),
+                credentials.username.domain_name().unwrap_or_default().into(),
+            ),
+        };
+
         Self {
-            user: credentials.username.account_name().into(),
-            domain: credentials.username.domain_name().unwrap_or_default().into(),
+            user,
+            domain,
             password: ZeroizedUtf16String(password.into()).into(),
         }
     }
