@@ -318,14 +318,6 @@ fn write_password_credentials(credentials: &AuthIdentityBuffers, cred_ssp_mode: 
         CredSspMode::CredentialLess => &empty_identity,
     };
 
-    eprintln!(
-        "[credssp] ts_password_creds mode={:?} user='{}' domain='{}' password_len={}",
-        cred_ssp_mode,
-        identity.user.to_string(),
-        identity.domain.to_string(),
-        identity.password.as_ref().0.to_string().len(),
-    );
-
     let ts_credentials_len = sizeof_ts_credentials(identity);
     let ts_credentials_sequence_len = ber::sizeof_sequence(ts_credentials_len);
     let password_credentials_len = sizeof_ts_password_creds(identity);
